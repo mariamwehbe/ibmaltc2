@@ -1,0 +1,153 @@
+version: "3.8"
+
+services:
+
+  db:
+    image: mysql
+    volumes:
+      - ./api/src/main/resources/db/migration/:/docker-entrypoint-initdb.d
+    container_name: db
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ALLOW_EMPTY_PASSWORD=true
+      - MYSQL_ROOT_PASSWORD=tlc
+      - MYSQL_DATABASE=tlc
+      - MYSQL_USER=tlc
+      - MYSQL_PASSWORD=tlc
+
+  api:
+#e    build: ./api/
+    build: 
+      context: ./api/
+      dockerfile: Dockerfile
+    container_name: api
+#e    image: api
+    environment:
+        - Dquarkus.http.host=0.0.0.0
+        - Dquarkus.datasource.usename=tlc
+        - Dquarkus.dataource.password=tlc
+        - quarkus.datasource.jdbc.url=jdbc:mysql://db:3306/tlc?useUnicode=true&serverTimezone=Europe/Paris
+        - doodle.internalPadUrl=http://etherpad:9001/
+        - doodle.externalPadUrl=http://pad.mwehbe.istic.univ-rennes1.fr:90/
+#    command: ["-Dquarkus.http.host=0.0.0.0", "-Dquarkus.datasource.usename=tlc", "-Dquarkus.dataource.password=tlc", "-Dquarkus.datasource.jdbc.url=jdbc:mysql://db:3306/tlc?useUnicode=true&serverTimezone=Europe/Paris", "-Ddoodle.internalPadUrl=http://etherpad:9001", "-Ddoodle.externalPadUrl=http://pad.tlc.fr:90/" ]
+#    depends_on:
+ #     - db
+#    expose:
+ #     - '80'
+    ports:
+      - "8080:8080"
+#       - "90:80"
+    restart: always
+
+  doodlefront:
+    build:
+      context: ./front/
+      dockerfile: Dockerfile
+      target: prod
+    container_name: doodlefront
+#    depends_on:
+#      - webserver
+    ports:
+ #     - "8080:80"
+       - "80:80"
+       - "443:443"
+    volumes:
+#      - ./server-confs:/server-confs
+      - ./exampleconfd/doodle.conf:/etc/nginx/conf.d/doodle.conf
+      - ./exampleconfd/pad.conf:/etc/nginx/conf.d/pad.conf
+      - ./exampleconfd/myadmin.conf:/etc/nginx/conf.d/myadmin.conf
+      - ./certificates:/etc/letsencrypt
+    environment:
+      - SERVER_NAME=mwehbe.istic.univ-rennes1.fr pad.mwehbe.istic.univ-rennes1.fr myadmin.mwehbe.istic.univ-rennes1.fr
+      - SERVE_FILES=yes
+#      - DISABLE_DEFAULT_SERVER=no
+ #     - PROXY_REAL_IP=yes
+      - USE_LIMIT_REQ=no
+      - AUTO_LETS_ENCRYPT=yes
+      - REDIRECT_HTTP_TO_HTTPS=yes
+      - HTTP2=no
+      - FEATURE_POLICY=accelerometer 'none'; ambient-light-sensor 'none'; autoplay 'none'; camera 'none'; display-capture 'none'; document-domain 'none'; encrypted-media 'none'; fullscreen 'none'; 
+
+  etherpad:
+    image: etherpad/etherpad:latest
+    container_name: etherpad
+    ports:
+      - "9001:9001"
+    volumes:
+      -  ./APIKEY.txt:/opt/etherpad-lite/APIKEY.txt
+    #depends_on:
+     # - doodlefront
+      #- api
+
+    environment:
+      - PMA_ABSOLUTE_URI=http://etherpad.mwehbe.istic.univ-rennes1.fr
+  mail:
+    image: bytemark/smtp
+    restart: always
+    ports:
+      - "2525:25"
+
+  myadmin:
+    image: phpmyadmin
+    container_name: myadmin
+    #ports:
+     # - "8082:80"
+    expose:
+      - 80
+    environment:
+       PMA_HOST: db
+       PMA_ABSOLUTE_URI: http://myadmin.mwehbe.istic.univ-rennes1.fr
+       PMA_PORT: 3306
+
+      #PMA_ABSOLUTE_URI=https://aamiard.diverse-team.fr/phpmyadmin/
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/etc/prometheus/console_libraries
+      - --web.console.templates=/etc/prometheus/consoles
+      - --storage.tsdb.retention.time=200h
+      - --web.enable-lifecycle
+    expose:
+      - "9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+     - api
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      # - VIRTUAL_HOST=grafana.mwehbe.istic.univ-rennes1.fr # adjust to match your domain name
+      # - VIRTUAL_PROTO=https
+      # - VIRTUAL_PORT=3000
+      # - LETSENCRYPT_HOST=grafana.mwehbe.istic.univ-rennes1.fr # adjust to match your domain name
+      # - GF_SERVER_CERT_FILE=/etc/letsencrypt/certs/grafana.istic.tk.crt # adjust to match your domain na>
+      # - GF_SERVER_CERT_KEY=/etc/letsencrypt/certs/grafana.istic.tk.key # adjust to match your domain name
+      # - GF_SERVER_PROTOCOL=https
+      - GF_SERVER_DOMAIN=grafana.mwehbe.istic.univ-rennes1.fr # adjust to match your domain name
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=SECRET_PASSWORD
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DIAGNOSTICS_PROFILING_ENABLED=true
+      - GF_DIAGNOSTICS_PROFILING_ADDR=0.0.0.0
+      - GF_DIAGNOSTICS_PROFILING_PORT=8080
+      - GF_DIAGNOSTICS_TRACING_FILE=/tmp/trace.out
+    expose:
+      - 3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+volumes:
+   #mysqldb_data:
+  grafana_data:
+  prometheus_data:
+  munin_data:

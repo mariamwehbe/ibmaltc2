@@ -1,0 +1,210 @@
+version: '3.9'
+
+services:
+   front:
+      image: tlc/frontend
+      restart: unless-stopped
+      container_name: frontend
+      build:
+         context: .
+         dockerfile: Dockerfile_frontend
+      ports:
+         - 80:80
+         - 443:443
+      environment:
+         # Ensemble des endpoints pour lequel il générera des certificats
+         - SERVER_NAME= doodle.mwehbe.istic.univ-rennes1.fr, pad.mwehbe.istic.univ-rennes1.fr, phpmyadmin.mwehbe.istic.univ-rennes1.fr prometheus.mwehbe.istic.univ-rennes1.fr grafana.mwehbe.istic.univ-rennes1.fr munin.mwehbe.istic.univ-rennes1.fr backend.mwehbe.istic.univ-rennes1.fr
+         - SERVE_FILES= yes
+         - DISABLE_DEFAULT_SERVER= no
+         # Transmission de l'IP publique vers les containers
+         - PROXY_REAL_IP= yes
+         #       MAX_CLIENT_SIZE:100m
+         #       USE_ANTIBOT:captcha
+         # Configuration de letencrypt
+         - AUTO_LETS_ENCRYPT= no
+         # redirect du 80 vers 443 automatique
+         - REDIRECT_HTTP_TO_HTTPS= no
+         - USE_LIMIT_REQ= no
+         # Désactivation http2
+         - HTTP2= no
+         # Paramétrage des entêtes http
+         - FEATURE_POLICY= accelerometer 'none'; ambient-light-sensor 'none'; autoplay 'none'; camera 'none'; display-capture 'none'; document-domain 'none'; encrypted-media 'none'; fullscreen 'none'; geolocation 'none'; gyroscope 'none'; magnetometer 'none'; microphone 'none'; midi 'none'; payment 'none'; picture-in-picture 'none'; speaker 'none'; sync-xhr 'self'; usb 'none'; vibrate 'none'; vr 'none'
+     # networks:
+      #   - proxy
+
+   db:
+      image: mysql
+      container_name: mysqldb
+      restart: unless-stopped
+      environment:
+         MYSQL_ALLOW_EMPTY_PASSWORD: true
+         MYSQL_ROOT_PASSWORD: root
+         MYSQL_DATABASE: tlc
+         MYSQL_USER: tlc
+         MYSQL_PASSWORD: tlc
+      expose:
+         - 3306
+      volumes:
+         - mysqldb_data:/var/lib/mysql
+         - ./api/src/main/resources/db/migration/:/docker-entrypoint-initdb.d
+#      networks:
+ #        - proxy
+
+
+   phpmyadmin:
+      image: phpmyadmin
+      container_name: myadmin
+      expose:
+         - 80
+      environment:
+         PMA_ABSOLUTE_URI: http://phpmyadmin.mwehbe.istic.univ-rennes1.fr
+         PMA_HOST: db
+         PMA_PORT: 3306
+         #  MYSQL_ROOT_PASSWORD: notSecureChangeMe
+      depends_on:
+         - db
+  #    networks:
+   #      - proxy
+
+   back:
+      image: tlc/backend
+      restart: always
+      container_name: back
+      build:
+         context: .
+         dockerfile: Dockerfile_api
+      environment:
+            - quarkus.datasource.jdbc.url=jdbc:mysql://db:3306/tlc?useUnicode=true&serverTimezone=Europe/Paris
+            - doodle.internalPadUrl=http://etherpad:9001/
+            - doodle.externalPadUrl=http://pad.mwehbe.istic.univ-rennes1.fr/
+      expose:
+         - '80'
+      links:
+         - db
+      depends_on:
+         - db
+    #  networks:
+     #    - proxy
+
+   etherpad:
+      image: etherpad/etherpad:latest
+      container_name: etherpad
+      restart: always
+      ports:
+         - "9001:9001"
+      environment:
+         DEFAULT_PAD_TEXT: Bienvenue sur le notepad officiel du site https://pad.mwehbe.istic.univ-rennes1.fr ! # texte par defaut à la création d'un bloc-note
+         TITLE: DoodlePad # Titre de l'instance
+         ADMIN_PASSWORD: admin # mot de passe de la page d'administration
+      # TRUST_PROXY: true
+      volumes:
+         - ./APIKEY.txt:/opt/etherpad-lite/APIKEY.txt
+      depends_on:
+         - front
+         - back
+      #networks:
+       #  - proxy
+
+   # mail:
+   #    image: bytemark/smtp
+   #    container_name: mail
+   #    restart: always
+   #    ports:
+   #       - "2525:25" 
+   #    environment: 
+   #       RELAY_HOST: smtp-relay.sendinblue.com
+   #       RELAY_PORT: 587
+   #       RELAY_USERNAME: malqabbani@live.com
+   #       RELAY_PASSWORD: bnOBKkgqhJtEyIG7
+   #    networks:
+   #       - proxy
+      
+   prometheus:
+      image: prom/prometheus:latest
+      container_name: prometheus
+      restart: unless-stopped
+      command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/etc/prometheus/console_libraries
+      - --web.console.templates=/etc/prometheus/consoles
+      - --storage.tsdb.retention.time=200h
+      - --web.enable-lifecycle
+      expose:
+        - "9090"
+      volumes:
+        - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+        - prometheus_data:/prometheus
+      #networks:
+       # - proxy
+
+   grafana:
+      image: grafana/grafana:latest
+      container_name: grafana
+      restart: unless-stopped
+      depends_on:
+         - prometheus
+      environment:
+         # - VIRTUAL_HOST=grafana.mwehbe.istic.univ-rennes1.fr # adjust to match your domain name
+         # - VIRTUAL_PROTO=https
+         # - VIRTUAL_PORT=3000
+         # - LETSENCRYPT_HOST=grafana.mwehbe.istic.univ-rennes1.fr # adjust to match your domain name
+         # - GF_SERVER_CERT_FILE=/etc/letsencrypt/certs/grafana.istic.tk.crt # adjust to match your domain name
+         # - GF_SERVER_CERT_KEY=/etc/letsencrypt/certs/grafana.istic.tk.key # adjust to match your domain name
+         # - GF_SERVER_PROTOCOL=https
+         - GF_SERVER_DOMAIN=grafana.mwehbe.istic.univ-rennes1.fr # adjust to match your domain name
+         - GF_SECURITY_ADMIN_USER=admin
+         - GF_SECURITY_ADMIN_PASSWORD=SECRET_PASSWORD
+         - GF_USERS_ALLOW_SIGN_UP=false
+         - GF_DIAGNOSTICS_PROFILING_ENABLED=true
+         - GF_DIAGNOSTICS_PROFILING_ADDR=0.0.0.0
+         - GF_DIAGNOSTICS_PROFILING_PORT=8080
+         - GF_DIAGNOSTICS_TRACING_FILE=/tmp/trace.out
+      expose:
+        - 3000
+      volumes:
+        - grafana_data:/var/lib/grafana
+        - ./grafana/provisioning:/etc/grafana/provisioning
+      #   - certs:/etc/letsencrypt/certs:ro
+      #networks:
+       # - proxy
+
+   munin:
+      image: moimudi/munin:latest
+      container_name: munin
+      restart: unless-stopped
+      # depends_on:
+      #    - reverse-proxy
+      # in case we need to build image
+      # build:
+      #    context: ./container-munin/
+      #    dockerfile: Dockerfile
+      environment:
+         - TZ=Europe/Paris
+         # - VIRTUAL_HOST=munin.mwehbe.istic.univ-rennes1.fr
+         # - LETSENCRYPT_HOST=munin.mwehbe.istic.univ-rennes1.fr
+      expose:
+         - 80
+      volumes:
+         - ./munin/conf:/etc/munin/munin-conf.d
+         - munin_data:/var/lib/munin
+         - munin_data:/var/log/munin
+      #networks:
+       #  - proxy
+# untagthem as needed.
+
+volumes:
+   # html:
+   # vhost:
+   # certs:
+   # acme:
+   mysqldb_data:
+   grafana_data:
+   prometheus_data:
+   munin_data:
+#networks:
+ #  proxy:
+  #    external: true
+
+
+
