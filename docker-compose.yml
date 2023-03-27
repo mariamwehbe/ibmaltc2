@@ -1,0 +1,213 @@
+version: '3.9'
+
+services:
+   reverse-proxy:
+      image: jwilder/nginx-proxy:latest
+      container_name: reverse-proxy
+      restart: always
+      ports:
+         - 80:80
+         - 443:443
+      volumes:
+         - ./volumes/nginx/html:/usr/share/nginx/html
+         - ./volumes/nginx/vhost:/etc/nginx/vhost.d
+         - ./volumes/nginx/certs:/etc/nginx/certs
+         - ./volumes/nginx/acme:/etc/acme.sh
+         - /run/docker.sock:/tmp/docker.sock:ro
+      networks:
+         - proxy
+     
+   letsencrypt:
+      image: nginxproxy/acme-companion
+      container_name: letsencrypt-helper
+      restart: always
+      depends_on:
+         - reverse-proxy
+      environment:
+         NGINX_PROXY_CONTAINER: reverse-proxy
+         DEFAULT_EMAIL: tlc@istic.tk
+      volumes:
+         - ./volumes/nginx/html:/usr/share/nginx/html
+         - ./volumes/nginx/vhost:/etc/nginx/vhost.d
+         - ./volumes/nginx/certs:/etc/nginx/certs
+         - ./volumes/nginx/acme:/etc/acme.sh
+         - /run/docker.sock:/var/run/docker.sock:ro
+      networks:
+         - proxy
+
+   frontend:
+      image: tlc/frontend
+      container_name: frontend
+      restart: unless-stopped
+      depends_on:
+         - reverse-proxy
+      build:
+         context: .
+         dockerfile: Dockerfile_frontend
+      environment:
+         - VIRTUAL_HOST=mwehbe.istic.univ-rennes1.fr
+         - LETSENCRYPT_HOST=mwehbe.istic.univ-rennes1.fr
+      expose:
+         - 80
+      volumes:
+      - ./volumes/nginx/conf.d:/etc/nginx/conf.d:ro
+      logging:
+         options:
+            max-size: '4m'
+            max-file: '10'
+      networks:
+         - proxy
+
+   backend:
+      image: tlc/backend
+      container_name: backend
+      restart: always
+      links:
+         - db
+      depends_on:
+         - reverse-proxy
+         - db
+      build:
+         context: .
+         dockerfile: Dockerfile_api
+      environment:
+         - quarkus.datasource.jdbc.url=jdbc:mysql://mysqldb:3306/tlc?useUnicode=true&serverTimezone=Europe/Paris
+         - doodle.internalPadUrl=http://etherpad:9001/
+         - doodle.externalPadUrl=http://mwehbe.istic.univ-rennes1.fr/etherpad/
+      expose:
+         - 8080
+      networks:
+         - proxy
+
+   db:
+      image: mysql
+      container_name: mysqldb
+      restart: unless-stopped
+      environment:
+         MYSQL_ALLOW_EMPTY_PASSWORD: true
+         MYSQL_ROOT_PASSWORD: root
+         MYSQL_DATABASE: tlc
+         MYSQL_USER: tlc
+         MYSQL_PASSWORD: tlc
+      expose:
+         - 3306
+      volumes:
+         - mysqldb_data:/var/lib/mysql
+         - ./api/src/main/resources/db/migration/:/docker-entrypoint-initdb.d
+      networks:
+         - proxy
+
+   phpmyadmin:
+      image: phpmyadmin/phpmyadmin:latest
+      container_name: myadmin
+      restart: unless-stopped
+      depends_on:
+         - reverse-proxy
+         - db
+      environment:
+         - PMA_ABSOLUTE_URI=https://mwehbe.istic.univ-rennes1.fr/phpmyadmin/
+         - PMA_HOST=mysqldb
+         - PMA_PORT=3306
+      expose:
+         - 80
+      networks:
+         - proxy
+
+   etherpad:
+      image: etherpad/etherpad:latest
+      container_name: etherpad
+      restart: unless-stopped
+      depends_on:
+         - reverse-proxy
+         - frontend
+         - backend
+      environment:
+         - DEFAULT_PAD_TEXT=Bienvenue sur le notepad officiel du site https://mwehbe.istic.univ-rennes1.fr/etherpad! # texte par defaut à la création d'un bloc-note
+         - TITLE=DoodlePad # Titre de l'instance
+         - ADMIN_PASSWORD=admin # mot de passe de la page d'administration
+      expose:
+         - 9001
+      volumes:
+         - ./etherpad/APIKEY.txt:/opt/etherpad-lite/APIKEY.txt
+      networks:
+         - proxy
+
+   prometheus:
+      image: prom/prometheus:latest
+      container_name: prometheus
+      restart: unless-stopped
+      command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/etc/prometheus/console_libraries
+      - --web.console.templates=/etc/prometheus/consoles
+      - --storage.tsdb.retention.time=200h
+      - --web.enable-lifecycle
+      expose:
+        - 9090
+      volumes:
+        - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+        - prometheus_data:/prometheus
+      networks:
+         - proxy
+
+   grafana:
+      image: grafana/grafana:latest
+      container_name: grafana
+      restart: unless-stopped
+      depends_on:
+         - prometheus
+      environment:
+         - GF_SERVER_DOMAIN=mwehbe.istic.univ-rennes1.fr/grafana/ # adjust to match your domain name
+         - GF_SECURITY_ADMIN_USER=admin
+         - GF_SECURITY_ADMIN_PASSWORD=SECRET_PASSWORD
+         - GF_USERS_ALLOW_SIGN_UP=false
+         - GF_DIAGNOSTICS_PROFILING_ENABLED=true
+         - GF_DIAGNOSTICS_PROFILING_ADDR=0.0.0.0
+         - GF_DIAGNOSTICS_PROFILING_PORT=8080
+         - GF_DIAGNOSTICS_TRACING_FILE=/tmp/trace.out
+         - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/jvm-quarkus-micrometer-metrics_rev6.json
+      expose:
+        - 3000
+      volumes:
+         - grafana_data:/var/lib/grafana
+         - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources/
+         - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards/
+      networks:
+         - proxy
+
+   munin:
+      image: moimudi/munin:latest
+      container_name: munin
+      restart: unless-stopped
+      depends_on:
+         - reverse-proxy
+      # in case we need to build image
+      # build:
+      #    context: ./container-munin/
+      #    dockerfile: Dockerfile
+      environment:
+         - TZ=Europe/Paris
+      expose:
+         - 80
+      volumes:
+         - ./volumes/munin/conf:/etc/munin/munin-conf.d
+         - munin_data:/var/lib/munin
+         - munin_data:/var/log/munin
+      networks:
+         - proxy
+# untagthem as needed.
+volumes:
+   # html:
+   # vhost:
+   # certs:
+   # acme:
+   mysqldb_data:
+   grafana_data:
+   prometheus_data:
+   munin_data:
+networks:
+   proxy:
+      external: true
+
+  

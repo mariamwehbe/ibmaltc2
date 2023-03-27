@@ -1,0 +1,12 @@
+FROM nginx:latest as production
+FROM node:12-alpine as compilation
+WORKDIR /app
+COPY front/ .
+RUN npm install &&\
+	npm i -g @angular/cli@10.1.7 &&\
+	ng build --prod
+FROM production
+WORKDIR /app
+RUN rm -rf /usr/share/nginx/html/*
+COPY --from=compilation /app/dist/tlcfront/ /usr/share/nginx/html/
+EXPOSE 80
